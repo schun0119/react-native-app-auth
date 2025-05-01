@@ -671,10 +671,14 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
         final Context context = this.reactContext;
         final Activity currentActivity = getCurrentActivity();
 
+        String responseType = additionalParametersMap != null && additionalParametersMap.containsKey("response_type")
+                ? additionalParametersMap.get("response_type")
+                : ResponseTypeValues.CODE;
+
         AuthorizationRequest.Builder authRequestBuilder = new AuthorizationRequest.Builder(
                 serviceConfiguration,
                 clientId,
-                ResponseTypeValues.CODE,
+                responseType,
                 Uri.parse(redirectUrl));
 
         if (scopesString != null) {
@@ -683,6 +687,9 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
 
         if (additionalParametersMap != null) {
             // handle additional parameters separately to avoid exceptions from AppAuth
+            if (additionalParametersMap.containsKey("response_type")) {
+                additionalParametersMap.remove("response_type");
+            }
             if (additionalParametersMap.containsKey("display")) {
                 authRequestBuilder.setDisplay(additionalParametersMap.get("display"));
                 additionalParametersMap.remove("display");
