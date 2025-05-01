@@ -84,6 +84,7 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
     private String clientSecret;
     private final ConcurrentHashMap<String, AuthorizationServiceConfiguration> mServiceConfigurations = new ConcurrentHashMap<>();
     private boolean isPrefetched = false;
+    private AuthorizationRequest authRequest;
 
     public RNAppAuthModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -486,16 +487,46 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
     @Override
     public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
         try {
-        if (requestCode == 52) {
-            if (data == null) {
-                if (promise != null) {
-                    promise.reject("authentication_error", "Data intent is null" );
+            if (requestCode == 52) {
+                if (data == null) {
+                    return;
                 }
-                return;
-            }
 
-            final AuthorizationResponse response = AuthorizationResponse.fromIntent(data);
-            AuthorizationException ex = AuthorizationException.fromIntent(data);
+                PerformTokenRequest(AuthorizationResponse.fromIntent(data), AuthorizationException.fromIntent(data));
+            } // close if
+
+            if (requestCode == 53) {
+                if (data == null) {
+                    if (promise != null) {
+                        promise.reject("end_session_failed", "Data intent is null" );
+                    }
+                    return;
+                }
+                EndSessionResponse response = EndSessionResponse.fromIntent(data);
+                AuthorizationException ex = AuthorizationException.fromIntent(data);
+                if (ex != null) {
+                    if (promise != null) {
+                        handleAuthorizationException("end_session_failed", ex, promise);
+                    }
+                    return;
+                }
+                final Promise endSessionPromise = this.promise;
+                if (endSessionPromise != null) {
+                    WritableMap map = EndSessionResponseFactory.endSessionResponseToMap(response);
+                    endSessionPromise.resolve(map);
+                }
+            }
+        } catch (Exception e) {
+            if(promise != null) {
+                promise.reject("run_time_exception", e.getMessage());
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    private void PerformTokenRequest(AuthorizationResponse response, AuthorizationException ex) {
+        try {
             if (ex != null) {
                 if (promise != null) {
                     handleAuthorizationException("authentication_error", ex, promise);
@@ -559,37 +590,13 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
             } else {
                 authService.performTokenRequest(tokenRequest, tokenResponseCallback);
             }
-
-        } // close if
-
-        if (requestCode == 53) {
-            if (data == null) {
-                if (promise != null) {
-                    promise.reject("end_session_failed", "Data intent is null" );
-                }
-                return;
-            }
-            EndSessionResponse response = EndSessionResponse.fromIntent(data);
-            AuthorizationException ex = AuthorizationException.fromIntent(data);
-            if (ex != null) {
-                if (promise != null) {
-                    handleAuthorizationException("end_session_failed", ex, promise);
-                }
-                return;
-            }
-            final Promise endSessionPromise = this.promise;
-            if (endSessionPromise != null) {
-                WritableMap map = EndSessionResponseFactory.endSessionResponseToMap(response);
-                endSessionPromise.resolve(map);
+        } catch (Exception e) {
+            if(promise != null) {
+                promise.reject("run_time_exception", e.getMessage());
+            } else {
+                throw e;
             }
         }
-    } catch (Exception e) {
-        if(promise != null) {
-            promise.reject("run_time_exception", e.getMessage());
-        } else {
-            throw e;
-        }
-    }
     }
 
     /*
@@ -732,7 +739,7 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
             authRequestBuilder.setNonce(null);
         }
 
-        AuthorizationRequest authRequest = authRequestBuilder.build();
+        authRequest = authRequestBuilder.build();
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             AuthorizationService authService = new AuthorizationService(context, appAuthConfiguration);
@@ -1104,7 +1111,44 @@ public class RNAppAuthModule extends ReactContextBaseJavaModule implements Activ
 
     @Override
     public void onNewIntent(Intent intent) {
+        if (intent == null) {
+            if (promise != null) {
+                promise.reject("authentication_error", "Intent is null in onNewIntent");
+            }
+            return;
+        }
 
+        Uri uri = intent.getData();
+        if (uri == null) {
+            if (promise != null) {
+                promise.reject("authentication_error", "No URI found in onNewIntent intent");
+            }
+            return;
+        }
+        
+        String fragment = uri.getFragment();
+        Map<String, String> params = new HashMap<>();
+        if (fragment != null && !fragment.isEmpty()) {
+            for (String param : fragment.split("&")) {
+                String[] keyValue = param.split("=");
+                if (keyValue.length == 2) {
+                    params.put(keyValue[0], keyValue[1]);
+                }
+            }
+            AuthorizationResponse.Builder builder = new AuthorizationResponse.Builder(authRequest)
+                .setAuthorizationCode(params.get("code"))
+                .setState(params.get("state"));
+            if (params.containsKey("id_token")) {
+                builder.setIdToken(params.get("id_token"));
+            }
+
+            PerformTokenRequest(builder.build(), null);
+        }
+        else {
+            if (promise != null) {
+                promise.reject("authentication_error", "No fragments in uri");
+            }
+        }
     }
 
     @Override
