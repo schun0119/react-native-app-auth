@@ -15,8 +15,50 @@
 
 @implementation RNAppAuth
 
--(BOOL)resumeExternalUserAgentFlowWithURL:(NSURL *)url {
-    return [_currentSession resumeExternalUserAgentFlowWithURL:url];
+// Helper method to preprocess the URL
+- (NSURL *)preprocessURL:(NSURL *)url {
+    // Parse URL components
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    
+    // Handle fragment (e.g., #state=xyz&code=123)
+    NSString *fragment = components.fragment;
+    NSMutableArray<NSURLQueryItem *> *queryItems = [NSMutableArray array];
+    
+    if (fragment.length > 0) {
+        // Split fragment into key-value pairs
+        NSArray<NSString *> *fragmentPairs = [fragment componentsSeparatedByString:@"&"];
+        for (NSString *pair in fragmentPairs) {
+            NSArray<NSString *> *keyValue = [pair componentsSeparatedByString:@"="];
+            if (keyValue.count == 2) {
+                NSString *name = keyValue[0];
+                NSString *value = keyValue[1];
+                [queryItems addObject:[NSURLQueryItem queryItemWithName:name value:value]];
+            }
+        }
+        
+        // Clear the fragment
+        components.fragment = nil;
+    }
+    
+    // Set query items (move fragment parameters to query string)
+    components.queryItems = queryItems.count > 0 ? queryItems : nil;
+    
+    NSURL *processedURL = components.URL;
+    if (!processedURL) {
+        return url; // Fallback to original URL
+    }
+    
+    return processedURL;
+}
+
+// Resume the external user agent flow with a preprocessed URL
+- (BOOL)resumeExternalUserAgentFlowWithURL:(NSURL *)url {
+    // Preprocess the URL before passing to AppAuth
+    NSURL *processedURL = [self preprocessURL:url];
+    
+    // Pass the preprocessed URL to AppAuth
+    BOOL result = [_currentSession resumeExternalUserAgentFlowWithURL:processedURL];
+    return result;
 }
 
 - (dispatch_queue_t)methodQueue
@@ -418,8 +460,50 @@ RCT_REMAP_METHOD(logout,
                                                            [UIApplication.sharedApplication endBackgroundTask:rnAppAuthTaskId];
                                                            rnAppAuthTaskId = UIBackgroundTaskInvalid;
                                                            if (authState) {
-                                                               resolve([self formatResponse:authState.lastTokenResponse
-                                                                           withAuthResponse:authState.lastAuthorizationResponse]);
+                                                                // If authState has a token response, use it
+                                                                if (authState.lastTokenResponse) {
+                                                                    resolve([self formatResponse:authState.lastTokenResponse
+                                                                            withAuthResponse:authState.lastAuthorizationResponse]);
+                                                                } else {
+                                                                    // Hybrid flow: manually perform token exchange
+                                                                    
+                                                                    // Create additional parameters with client_id and client_secret for client_secret_post
+                                                                    NSMutableDictionary *tokenAdditionalParameters = [NSMutableDictionary dictionaryWithDictionary:additionalParameters];
+                                                                    if (clientId) {
+                                                                        tokenAdditionalParameters[@"client_id"] = clientId;
+                                                                    }
+                                                                    if (clientSecret) {
+                                                                        tokenAdditionalParameters[@"client_secret"] = clientSecret;
+                                                                    }
+
+                                                                    // Perform token exchange
+                                                                    OIDTokenRequest *tokenExchangeRequest =
+                                                                    [[OIDTokenRequest alloc] initWithConfiguration:configuration
+                                                                                                        grantType:OIDGrantTypeAuthorizationCode
+                                                                                                authorizationCode:authState.lastAuthorizationResponse.authorizationCode
+                                                                                                    redirectURL:[NSURL URLWithString:redirectUrl]
+                                                                                                        clientID:clientId
+                                                                                                    clientSecret:nil // Set to nil for client_secret_post
+                                                                                                            scopes:nil
+                                                                                                    refreshToken:nil
+                                                                                                    codeVerifier:nil
+                                                                                            additionalParameters:tokenAdditionalParameters];
+                                                                    [OIDAuthorizationService performTokenRequest:tokenExchangeRequest
+                                                                                originalAuthorizationResponse:authState.lastAuthorizationResponse
+                                                                                                        callback:^(OIDTokenResponse *_Nullable tokenResponse, NSError *_Nullable tokenError) {
+                                                                                                            if (tokenResponse) {
+                                                                                                                // Create a new authState with the token response
+                                                                                                                OIDAuthState *newAuthState = [[OIDAuthState alloc]
+                                                                                                                                            initWithAuthorizationResponse:authState.lastAuthorizationResponse
+                                                                                                                                            tokenResponse:tokenResponse];
+                                                                                                                resolve([self formatResponse:tokenResponse
+                                                                                                                        withAuthResponse:authState.lastAuthorizationResponse]);
+                                                                                                            } else {
+                                                                                                                reject([self getErrorCode:tokenError defaultCode:@"token_exchange_failed"],
+                                                                                                                    [self getErrorMessage:tokenError], tokenError);
+                                                                                                            }
+                                                                                                        }];
+                                                                }
                                                            } else {
                                                                reject([self getErrorCode: error defaultCode:@"authentication_failed"],
                                                                       [self getErrorMessage: error], error);
